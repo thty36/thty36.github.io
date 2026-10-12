@@ -181,9 +181,9 @@ footer b { color: var(--text-2); font-weight: 600; }
   </section>
 
   <footer>
-    <b>口径说明</b>：两端均为「输入 + 缓存 + 输出」总量口径；方舟、a8pi 等中转上的 glm 模型不计入官方总量，不参与反推。
-    「本机 &gt; 账号总量」出现负数属正常现象——官方网页接口有分钟级延迟，稍后自动对齐。
-    本页数据由本机定时任务每 10 分钟扫描并推送，页面每 60 秒自动拉取最新数据。
+    <b>口径说明</b>：他人用量 = BigModel 官方账号总量 − 本机消耗（反推），方舟、a8pi 等中转上的 glm 模型不计入官方总量。
+    数值偶尔为负属正常现象——官方接口有分钟级统计延迟，稍后自动对齐。
+    本页数据每 10 分钟自动扫描推送，页面每 60 秒自动拉取最新数据。
   </footer>
 </div>
 <div class="tooltip" id="tooltip"></div>
@@ -317,53 +317,44 @@ function render() {
   const k = r.kpi;
   const neg = k.other < 0;
   const kpis = [
-    kpiCard('账号总量', fmt(k.total), '#4f6df5', 'BigModel 网页口径'),
-    kpiCard('本机', fmt(k.mine), '#10a37f', 'ZCode · GLM 官方'),
-    kpiCard('他人（反推）', fmt(k.other), neg ? '#98a2b3' : '#d92d20', neg ? '总量 − 本机 · 为负说明口径有偏差' : '总量 − 本机'),
-    kpiCard('他人占比', k.total > 0 ? (k.ratioPct).toFixed(1) + '%' : '-', '#d92d20', '他人 / 账号总量'),
+    kpiCard('他人用量（反推）', fmt(k.other), neg ? '#98a2b3' : '#4f6df5', neg ? '官方接口有分钟级延迟，为负稍后自动对齐' : 'BigModel 官方口径'),
   ];
 
-  // 按天柱：绿=本机（上段）红=他人
-  const max = Math.max(...r.days.map((b) => b.total), 1);
+  // 按天柱：他人用量
+  const max = Math.max(...r.days.map((b) => b.other), 1);
   let bars = '';
   for (const b of r.days) {
-    const mine = Math.min(b.mine, b.total);
-    if (b.total <= 0 && b.mine <= 0) {
+    if (b.other <= 0) {
       bars += `<div class="shared-day empty"><div class="sd-bar"></div><span class="dt">${esc(b.label)}</span></div>`;
       continue;
     }
-    const hTot = (b.total / max) * 100;
-    const tip = `${b.key} · 总 ${fmt(b.total)} · 本机 ${fmt(b.mine)} · 他人 ${fmt(b.total - b.mine)}`;
+    const tip = `${b.key} · 他人 ${fmt(b.other)}`;
     bars += `<div class="shared-day" data-tip="${esc(tip)}">
-      <div class="sd-bar" style="height:${Math.max(hTot, 2)}%">
-        <div class="sd-mine" style="height:${(mine / Math.max(b.total, 0.001)) * 100}%"></div>
-      </div><span class="dt">${esc(b.label)}</span></div>`;
+      <div class="sd-bar" style="height:${Math.max((b.other / max) * 100, 2)}%;background:#4f6df5"></div>
+      <span class="dt">${esc(b.label)}</span></div>`;
   }
 
-  // 按模型
-  const mmax = r.models.length ? r.models[0].total : 1;
+  // 按模型（他人用量）
+  const mmax = Math.max(...r.models.map((m) => m.other), 1);
   const rows = r.models.map((m) => {
-    const others = Math.max(0, m.total - m.mine);
     return `<div class="mrow">
       <div class="mname" title="${esc(m.m)}">${esc(m.m)}</div>
       <div class="mbar-wrap"><div class="mbar">
-        <div class="seg" style="width:${(m.mine / mmax) * 100}%;background:#10a37f" data-tip="${esc(m.m)} · 本机|${fmtFull(m.mine)}"></div>
-        <div class="seg" style="width:${(others / mmax) * 100}%;background:#d92d20" data-tip="${esc(m.m)} · 他人|${fmtFull(others)}"></div>
+        <div class="seg" style="width:${(Math.max(0, m.other) / mmax) * 100}%;background:#4f6df5" data-tip="${esc(m.m)} · 他人|${fmtFull(m.other)}"></div>
       </div></div>
-      <div class="mtotal">${fmt(m.total)}</div>
+      <div class="mtotal">${fmt(m.other)}</div>
     </div>`;
   }).join('');
 
   body.innerHTML = `
-    <div class="kpis">${kpis.join('')}</div>
+    <div class="kpis" style="grid-template-columns:1fr;max-width:340px">${kpis.join('')}</div>
     <div class="chart-title">${esc(r.chartTitle)}（悬停查看明细）</div>
     <div class="shared-days">${bars}</div>
     <div class="legend">
-      <span class="li"><span class="dot" style="background:#10a37f"></span>本机 <span class="val">${fmt(k.mine)}</span></span>
-      <span class="li"><span class="dot" style="background:#d92d20"></span>他人 <span class="val">${fmt(Math.max(0, k.other))}</span></span>
+      <span class="li"><span class="dot" style="background:#4f6df5"></span>他人 <span class="val">${fmt(k.other)}</span></span>
     </div>
     <div class="models">
-      <div class="sub-title">按模型（本机 / 他人拆分）</div>
+      <div class="sub-title">按模型（他人用量）</div>
       ${rows || '<div class="chart-empty">所选范围内暂无模型数据</div>'}
     </div>`;
 }
