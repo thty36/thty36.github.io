@@ -59,12 +59,30 @@ body {
 .badge.warn { background: #fef3f2; color: #b42318; }
 .badge.muted { background: #f2f4f7; color: #667085; }
 .note { font-size: 12px; color: var(--text-3); }
-.quota-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 12px; }
 .quota-chip {
   font-size: 12px; background: #f5f7ff; border: 1px solid #e3e8ff; color: #3538cd;
   border-radius: 8px; padding: 5px 10px;
 }
 .quota-chip b { font-variant-numeric: tabular-nums; }
+
+/* ---------- 套餐额度卡片 ---------- */
+.quota-wrap { margin: 0 0 16px; }
+.quota-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
+.q-card { background: #f8fafc; border: 1px solid #eef1f5; border-radius: 12px; padding: 13px 16px 12px; }
+.q-card.warn { background: #fffcf5; border-color: #fdeccb; }
+.q-card.danger { background: #fef5f4; border-color: #fbd3cf; }
+.q-head { display: flex; justify-content: space-between; align-items: baseline; }
+.q-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.q-pct { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.q-card.warn .q-pct { color: #b54708; }
+.q-card.danger .q-pct { color: #b42318; }
+.q-bar { height: 8px; border-radius: 4px; background: #e9edf3; overflow: hidden; margin: 9px 0 8px; }
+.q-fill { height: 100%; border-radius: 4px; background: var(--green); transition: width .6s ease; }
+.q-card.warn .q-fill { background: #f79009; }
+.q-card.danger .q-fill { background: var(--red); }
+.q-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-3); flex-wrap: wrap; }
+.q-meta .q-used { font-variant-numeric: tabular-nums; }
+.q-meta .q-reset { font-variant-numeric: tabular-nums; color: var(--text-2); }
 
 /* ---------- KPI ---------- */
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
@@ -150,7 +168,7 @@ footer b { color: var(--text-2); font-weight: 600; }
       </div>
     </div>
     <div class="status-line" id="status-line"></div>
-    <div class="quota-chips" id="quota-chips"></div>
+    <div class="quota-wrap" id="quota"></div>
     <div id="body"></div>
   </section>
 
@@ -196,6 +214,7 @@ async function load(manual) {
   } catch (e) {
     state.lastLoadOk = false;
     renderStatus();
+    renderQuota();
     document.getElementById('sub-line').textContent =
       '拉取失败（' + esc(e.message) + '），显示上次数据 · 页面每分钟自动刷新';
   } finally {
@@ -216,20 +235,48 @@ function badgeOf(s) {
 function renderStatus() {
   const d = state.data;
   const line = document.getElementById('status-line');
-  const chipsBox = document.getElementById('quota-chips');
-  if (!d) { line.innerHTML = ''; chipsBox.innerHTML = ''; return; }
+  if (!d) { line.innerHTML = ''; return; }
 
   const [cls, txt] = badgeOf(d.webStatus);
   let html = `<span class="badge ${cls}">${esc(txt)}</span>` +
     (d.webNote ? `<span class="note">${esc(d.webNote)}</span>` : '');
+  if (d.quota && d.quota.level) html += `<span class="quota-chip">套餐 <b>${esc(d.quota.level)}</b></span>`;
   if (!state.lastLoadOk) html += `<span class="badge warn">刷新失败</span>`;
   line.innerHTML = html;
+}
 
-  const chips = (d.quota && d.quota.chips) || [];
-  let chipsHtml = '';
-  if (d.quota && d.quota.level) chipsHtml += `<span class="quota-chip">套餐 <b>${esc(d.quota.level)}</b></span>`;
-  for (const c of chips) chipsHtml += `<span class="quota-chip">${esc(c.label)} <b>${esc(c.text)}</b></span>`;
-  chipsBox.innerHTML = chipsHtml;
+/* ---------------- 套餐额度卡片（进度条 + 重置倒计时） ---------------- */
+function renderQuota() {
+  const box = document.getElementById('quota');
+  const q = state.data && state.data.quota;
+  const limits = (q && Array.isArray(q.limits)) ? q.limits : [];
+  if (!limits.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="quota-grid">' + limits.map((l) => {
+    const pct = l.pct != null ? l.pct : (l.total ? Math.round(l.used / l.total * 100) : null);
+    const cls = pct == null ? '' : pct >= 90 ? ' danger' : pct >= 70 ? ' warn' : '';
+    return `<div class="q-card${cls}">
+      <div class="q-head"><span class="q-label">${esc(l.label)}</span><span class="q-pct">${pct != null ? pct + '%' : ''}</span></div>
+      <div class="q-bar"><div class="q-fill" style="width:${Math.min(pct || 0, 100)}%"></div></div>
+      <div class="q-meta">
+        <span class="q-used">已用 ${fmtFull(l.used)}${l.total != null ? ' / ' + fmtFull(l.total) : ''}</span>
+        <span class="q-reset" data-reset="${l.resetAt || ''}"></span>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+  updateResetCountdowns();
+}
+
+function updateResetCountdowns() {
+  document.querySelectorAll('.q-reset[data-reset]').forEach((el) => {
+    const ts = Number(el.dataset.reset);
+    if (!ts) { el.textContent = ''; return; }
+    const ms = ts - Date.now();
+    if (ms <= 0) { el.textContent = '重置中'; return; }
+    const h = Math.floor(ms / 3600e3), m = Math.floor((ms % 3600e3) / 60e3), s = Math.floor((ms % 60e3) / 1000);
+    el.textContent = h >= 24
+      ? `${Math.floor(h / 24)} 天 ${h % 24} 小时后重置`
+      : h > 0 ? `${h} 小时 ${m} 分后重置` : `${m} 分 ${s} 秒后重置`;
+  });
 }
 
 function kpiCard(label, value, color, extra) {
@@ -243,6 +290,7 @@ function kpiCard(label, value, color, extra) {
 function render() {
   const d = state.data;
   renderStatus();
+  renderQuota();
   const body = document.getElementById('body');
   if (!d) { body.innerHTML = '<div class="chart-empty">正在加载数据…</div>'; return; }
 
@@ -340,6 +388,7 @@ document.addEventListener('mousemove', (ev) => {
 });
 
 setInterval(() => load(false), REFRESH_MS);
+setInterval(updateResetCountdowns, 1000);
 setInterval(() => {
   const s = Math.max(0, Math.ceil((state.nextLoadAt - Date.now()) / 1000));
   document.getElementById('countdown').textContent = s > 0 ? s + 's 后刷新' : '刷新中…';
