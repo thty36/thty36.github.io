@@ -14,7 +14,7 @@
 <meta property="og:description" content="用自建中继的 RustDesk 远程控制一台用 Wi-Fi 上网的 Windows 笔记本，主控端时不时报 decryption error 然后断开。有时几分钟内反复重连都失败，有时又能正常用几个小时。 排查下来，RustDesk、中继服务器、主控端都没有问题。真正的元凶是被控端笔记本的 MediaTek MT7922 无线网卡驱动：它会把本机发出的 TCP 数据改坏。RustDesk 的端到端">
 <meta property="og:locale" content="en_US">
 <meta property="article:published_time" content="2026-11-24T13:02:00.000Z">
-<meta property="article:modified_time" content="2026-11-25T10:38:07.837Z">
+<meta property="article:modified_time" content="2026-11-25T10:58:24.120Z">
 <meta property="article:author" content="John Doe">
 <meta property="article:tag" content="RustDesk">
 <meta property="article:tag" content="网络排障">
@@ -101,7 +101,7 @@
       
         <p>用自建中继的 RustDesk 远程控制一台用 Wi-Fi 上网的 Windows 笔记本，主控端时不时报 <code>decryption error</code> 然后断开。有时几分钟内反复重连都失败，有时又能正常用几个小时。</p>
 <p>排查下来，RustDesk、中继服务器、主控端都没有问题。真正的元凶是<strong>被控端笔记本的 MediaTek MT7922 无线网卡驱动：它会把本机发出的 TCP 数据改坏</strong>。RustDesk 的端到端加密检测到了被改动的数据，于是断开会话。</p>
-<p>这个问题只在特定的无线环境下触发。笔记本换到另一个 Wi-Fi 之后，测试全部干净，RustDesk 也不再报错。但出问题的代码仍在笔记本的驱动里，换到类似的环境下可能再次出现。</p>
+<p>这个问题只在 5 GHz（802.11ac）下触发。同一台路由器改用 2.4 GHz 之后，测试全部干净，RustDesk 也不再报错。但出问题的代码仍在笔记本的驱动里，回到 5 GHz 就会再出现。</p>
 <p>下面记录现象、排查过程、测试数据和解决办法。</p>
 <span id="more"></span>
 
@@ -110,7 +110,7 @@
 <li>被控端是一台用 Wi-Fi 上网的 Windows 11 笔记本（机械革命蛟龙系列），网卡是 MediaTek Wi-Fi 6E MT7922 160MHz，驱动是 <code>mtkwl6ex.sys</code>。</li>
 <li>出问题时主控端弹出 <code>decryption error</code>，会话断开，大约每 2 秒自动重连一次，每次连上一两秒到几秒又断。</li>
 <li>时好时坏：有时连续几分钟连不上，有时能稳定用几个小时。</li>
-<li>笔记本换到另一个 Wi-Fi（2.4 GHz，802.11ax）后不再出现。</li>
+<li>笔记本改连 2.4 GHz 后不再出现，同一路由器的 2.4 GHz 频段和另一台路由器都测过。</li>
 </ul>
 <h2 id="decryption-error-是什么意思"><a href="#decryption-error-是什么意思" class="headerlink" title="decryption error 是什么意思"></a><code>decryption error</code> 是什么意思</h2><p>RustDesk 两端之间的数据是逐帧加密的。它的实现在 <code>hbb_common/src/tcp.rs</code>（AGPL-3.0），用一个按方向各自递增的计数器当 nonce，下面是原文节选：</p>
 <figure class="highlight rust"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">pub</span> <span class="keyword">fn</span> <span class="title function_">enc</span>(&amp;<span class="keyword">mut</span> <span class="keyword">self</span>, data: &amp;[<span class="type">u8</span>]) <span class="punctuation">-&gt;</span> <span class="type">Vec</span>&lt;<span class="type">u8</span>&gt; &#123;</span><br><span class="line">    <span class="keyword">self</span>.<span class="number">1</span> += <span class="number">1</span>;</span><br><span class="line">    <span class="keyword">let</span> <span class="variable">nonce</span> = FramedStream::<span class="title function_ invoke__">get_nonce</span>(<span class="keyword">self</span>.<span class="number">1</span>);</span><br><span class="line">    secretbox::<span class="title function_ invoke__">seal</span>(&amp;data, &amp;nonce, &amp;<span class="keyword">self</span>.<span class="number">0</span>)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">pub</span> <span class="keyword">fn</span> <span class="title function_">dec</span>(&amp;<span class="keyword">mut</span> <span class="keyword">self</span>, bytes: &amp;<span class="keyword">mut</span> BytesMut) <span class="punctuation">-&gt;</span> <span class="type">Result</span>&lt;(), Error&gt; &#123;</span><br><span class="line">    <span class="keyword">if</span> bytes.<span class="title function_ invoke__">len</span>() &lt;= <span class="number">1</span> &#123;</span><br><span class="line">        <span class="keyword">return</span> <span class="title function_ invoke__">Ok</span>(());</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">self</span>.<span class="number">2</span> += <span class="number">1</span>;</span><br><span class="line">    <span class="keyword">let</span> <span class="variable">nonce</span> = FramedStream::<span class="title function_ invoke__">get_nonce</span>(<span class="keyword">self</span>.<span class="number">2</span>);</span><br><span class="line">    <span class="keyword">match</span> secretbox::<span class="title function_ invoke__">open</span>(bytes, &amp;nonce, <span class="keyword">self</span>.<span class="number">3</span>.<span class="title function_ invoke__">as_ref</span>().<span class="title function_ invoke__">unwrap_or</span>(&amp;<span class="keyword">self</span>.<span class="number">0</span>)) &#123;</span><br><span class="line">        <span class="title function_ invoke__">Ok</span>(res) =&gt; &#123;</span><br><span class="line">            bytes.<span class="title function_ invoke__">clear</span>();</span><br><span class="line">            bytes.<span class="title function_ invoke__">put_slice</span>(&amp;res);</span><br><span class="line">            <span class="title function_ invoke__">Ok</span>(())</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="title function_ invoke__">Err</span>(()) =&gt; <span class="title function_ invoke__">Err</span>(Error::<span class="title function_ invoke__">new</span>(ErrorKind::Other, <span class="string">&quot;decryption error&quot;</span>)),</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
@@ -136,7 +136,7 @@
 <li>在服务器上用 <code>tcpdump</code> 看被改动的包：1427 个数据包的 TCP 校验和全部是 <code>correct</code>。说明改坏发生在被控端计算校验和<strong>之前</strong>，不是路上坏的。</li>
 </ul>
 <p>结论：问题在被控端无线网卡的发送路径上。</p>
-<h3 id="6-换到另一个-Wi-Fi-之后"><a href="#6-换到另一个-Wi-Fi-之后" class="headerlink" title="6. 换到另一个 Wi-Fi 之后"></a>6. 换到另一个 Wi-Fi 之后</h3><p>把笔记本换到另一台路由器的 Wi-Fi 上（2.4 GHz，802.11ax），出口运营商没有变，再用同样的方法测：</p>
+<h3 id="6-改连-2-4-GHz-之后"><a href="#6-改连-2-4-GHz-之后" class="headerlink" title="6. 改连 2.4 GHz 之后"></a>6. 改连 2.4 GHz 之后</h3><p>让笔记本改连同一台路由器的 2.4 GHz 频段（802.11n，链路速率 144.4 Mbps）。路由器和出口网络都没有变，只换了频段：</p>
 <table>
 <thead>
 <tr>
@@ -145,7 +145,7 @@
 </tr>
 </thead>
 <tbody><tr>
-<td>64 MB 全速 × 3 轮（约 13 Mbps）</td>
+<td>64 MB 全速 × 3 轮（约 31~38 Mbps）</td>
 <td>每轮 1024 块中 0、0、0</td>
 </tr>
 <tr>
@@ -153,16 +153,16 @@
 <td>512 块中 0</td>
 </tr>
 </tbody></table>
-<p>而原来那个 Wi-Fi（5 GHz，802.11ac）下，每一轮测试都有改动。所以这个问题确实和所连的 Wi-Fi 有关，换一个 Wi-Fi 也是目前最省事的规避办法。</p>
-<p>那是不是原来那个网络的问题？我认为不是，改动发生在笔记本内部，理由有三条：</p>
+<p>另一台路由器（2.4 GHz，802.11ax，链路速率 286.8 Mbps）上也测了同样的 4 轮，结果也都是 0。</p>
+<p>而原来那个 5 GHz 频段（802.11ac，链路速率 866.7 Mbps）下，每一轮测试都有改动。同一台路由器、同一条出口网络，只换频段问题就消失了，所以路由器的转发和它后面的网络（校园网、运营商）都可以排除。触发条件是这台笔记本在 5 GHz &#x2F; 802.11ac 模式下的发送路径。</p>
+<p>另外三条证据指向同一个结论：</p>
 <ul>
 <li>换进来的内容是 802.11 管理帧里的信息元素。这类数据只存在于无线网卡和驱动里，路由器另一侧的网络设备既收不到无线帧，也不可能把它写进 TCP 数据。</li>
 <li>改动的位置和笔记本上应用每次 <code>send()</code> 的数据块对齐，规律见下一节的“奇偶”那条。网络上的设备看到的只是一段段独立的 TCP 报文，不知道哪几段来自同一次发送。</li>
 <li>被改的包 TCP 校验和是正确的，而回环和反方向都干净。</li>
 </ul>
-<p>更合理的解释是：驱动里的缺陷一直在，但只在原来那个 AP 的无线模式下才会触发，比如 5 GHz、802.11ac 这些特性对应的发送路径。</p>
-<p>我没有做的一个对照是用网线接原来那台路由器再测一次。如果那条也是干净的，就能直接说明路由器外侧的网络没有问题。</p>
-<h2 id="测出来的规律"><a href="#测出来的规律" class="headerlink" title="测出来的规律"></a>测出来的规律</h2><p>测试方法同上：每块 64 KiB，接收端逐块比对，统计被改动的块数。前五行都在出问题的那个 Wi-Fi 上测，第六、七行是换到另一个 Wi-Fi 之后，最后两行是对照。</p>
+<p>我没有试过调整路由器 5 GHz 的设置（比如把信道带宽改成 40 MHz）看能不能规避，也没有在别的 5 GHz 路由器上测过。</p>
+<h2 id="测出来的规律"><a href="#测出来的规律" class="headerlink" title="测出来的规律"></a>测出来的规律</h2><p>测试方法同上：每块 64 KiB，接收端逐块比对，统计被改动的块数。前五行都在出问题的那个 Wi-Fi（5 GHz，802.11ac）上测，第六到九行是 2.4 GHz 下的结果，最后两行是对照。</p>
 <table>
 <thead>
 <tr>
@@ -204,13 +204,25 @@
 </tr>
 <tr>
 <td>3.5.2.1383</td>
-<td>全速（约 13 Mbps），换到另一个 Wi-Fi</td>
+<td>全速（约 13 Mbps），另一台路由器的 2.4 GHz</td>
 <td>64 MB × 3 轮</td>
 <td>0、0、0</td>
 </tr>
 <tr>
 <td>3.5.2.1383</td>
-<td>2 Mbps，换到另一个 Wi-Fi</td>
+<td>2 Mbps，另一台路由器的 2.4 GHz</td>
+<td>32 MB</td>
+<td>512 块中 0</td>
+</tr>
+<tr>
+<td>3.5.2.1383</td>
+<td>全速（约 31~38 Mbps），同一路由器的 2.4 GHz</td>
+<td>64 MB × 3 轮</td>
+<td>0、0、0</td>
+</tr>
+<tr>
+<td>3.5.2.1383</td>
+<td>2 Mbps，同一路由器的 2.4 GHz</td>
 <td>32 MB</td>
 <td>512 块中 0</td>
 </tr>
@@ -228,7 +240,7 @@
 </tr>
 </tbody></table>
 <ul>
-<li><strong>发得越快，越容易被改。</strong> 全速时大约每 0.5 MB 就有一处，2 Mbps 时大约每 2 MB 一处，0.5 Mbps 时 8 MB 才一处。这解释了为什么远程桌面在画面静止时很稳定，画面一开始变化就频繁断开。</li>
+<li><strong>发得越快，越容易被改。</strong> 5 GHz 下全速时大约每 0.5 MB 就有一处，2 Mbps 时大约每 2 MB 一处，0.5 Mbps 时 8 MB 才一处。这解释了为什么远程桌面在画面静止时很稳定，画面一开始变化就频繁断开。</li>
 <li><strong>问题时轻时重。</strong> 同一台机器同一个脚本，下午的比例比晚上高一个数量级，也有个别一轮完全干净。</li>
 <li><strong>更新驱动没有解决。</strong> 从 3.4.0.1123 升到 3.5.2.1383 之后，测试结果没有变化。</li>
 <li><strong>限速发送时，被改的是大块发送末尾的几个字节。</strong> 限速到每次只有一个 <code>send()</code> 在途时，改动全部从数据块内部偏移 <code>742 + 1424 × k</code> 的位置开始（1424 是抓包看到的 TCP 每段数据长度），也就是这次发送末尾 1<del>27 字节的起点。其中一轮里，末尾恰好只剩 1</del>27 字节的大块发送共 37 次，18 次被改；末尾剩 28 字节以上的都没有被改。同一组数据发两次，两次各 18 处改动，其中 16 处位置相同。</li>
@@ -236,14 +248,14 @@
 <li><strong>全速发送时位置不固定，并且成簇出现。</strong> 64 MB 里的十几处改动集中在不到一秒内。</li>
 </ul>
 <p>我的猜测是驱动在发送路径上处理大块数据的分段时，比如大量发送卸载，最后不足一段的数据没有被正确填入，发出去的是缓冲区里残留的内容。这只是根据现象的推测，具体原因要驱动厂商才能确认。</p>
-<h2 id="影响范围"><a href="#影响范围" class="headerlink" title="影响范围"></a>影响范围</h2><p>这个问题影响这台机器通过 Wi-Fi 发出的所有数据：</p>
+<h2 id="影响范围"><a href="#影响范围" class="headerlink" title="影响范围"></a>影响范围</h2><p>这个问题影响这台机器通过 5 GHz 发出的所有数据：</p>
 <ul>
 <li>自带完整性校验的协议会报错或断开，例如 RustDesk 的 <code>decryption error</code>、SSH 连接莫名中断。</li>
 <li>没有校验的上传会被悄悄改坏，例如文件上传、<code>git push</code>、网盘同步。</li>
 </ul>
-<p>如果你的机器用 Wi-Fi 时遇到“上传的文件哈希不对”“SSH 老是断”“远程桌面报解密错误”，而换个网络就好了，可以用下面的脚本自查。</p>
+<p>如果你的机器用 Wi-Fi 时遇到“上传的文件哈希不对”“SSH 老是断”“远程桌面报解密错误”，而换个频段或换个网络就好了，可以用下面的脚本自查。</p>
 <h2 id="怎么解决"><a href="#怎么解决" class="headerlink" title="怎么解决"></a>怎么解决</h2><ol>
-<li><strong>换一个 Wi-Fi 或换一个频段。</strong> 换到另一台路由器后，4 轮测试全部干净，RustDesk 也不再报错。这是目前最省事的办法，但驱动里的问题还在。</li>
+<li><strong>改用 2.4 GHz，或者换一个 Wi-Fi。</strong> 同一台路由器的 2.4 GHz 频段下 4 轮、另一台路由器下 4 轮，测试全部干净，RustDesk 也不再报错。这是目前最省事的办法，代价是 Wi-Fi 速率变低，而且驱动里的问题还在。</li>
 <li><strong>插网线。</strong> 最可靠，直接绕开出问题的驱动。</li>
 <li><strong>更新或回退无线网卡驱动。</strong> 我这里从 3.4.0.1123 更新到 3.5.2.1383 没有效果，但别的版本或别的机型未必。</li>
 <li><strong>换一块网卡。</strong> 比如换一个其他芯片的 USB 无线网卡。</li>
@@ -252,7 +264,7 @@
 <h2 id="自查脚本"><a href="#自查脚本" class="headerlink" title="自查脚本"></a>自查脚本</h2><p>需要 Python 3.9 及以上，两端的 seed 必须一致。在另一台机器上运行接收端，在被测机器上运行发送端，接收端最后会打印被改动的块数，正常应该是 0。问题时轻时重，一次是 0 可以多跑几次。</p>
 <figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># nic_integrity_test.py —— 检查本机发出的 TCP 数据是否被改坏（需要 Python 3.9 及以上）</span></span><br><span class="line"><span class="comment"># 两端的 seed 必须一致。</span></span><br><span class="line"><span class="comment">#   接收端，放在另一台机器上：  python nic_integrity_test.py recv 9000 1</span></span><br><span class="line"><span class="comment">#   发送端，放在被测机器上：    python nic_integrity_test.py send &lt;接收端IP&gt; 9000 64 1</span></span><br><span class="line"><span class="keyword">import</span> random, socket, sys</span><br><span class="line"></span><br><span class="line">BLOCK = <span class="number">65536</span></span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="keyword">def</span> <span class="title function_">block</span>(<span class="params">seed, i</span>):  <span class="comment"># 第 i 块数据只由 seed 和 i 决定，两端都能各自重新生成</span></span><br><span class="line">    <span class="keyword">return</span> random.Random(seed * <span class="number">1000003</span> ^ i).randbytes(BLOCK)</span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> sys.argv[<span class="number">1</span>] == <span class="string">&quot;send&quot;</span>:</span><br><span class="line">    host, port, mb, seed = sys.argv[<span class="number">2</span>], <span class="built_in">int</span>(sys.argv[<span class="number">3</span>]), <span class="built_in">int</span>(sys.argv[<span class="number">4</span>]), <span class="built_in">int</span>(sys.argv[<span class="number">5</span>])</span><br><span class="line">    sizes, s = random.Random(seed + <span class="number">7</span>), socket.create_connection((host, port))</span><br><span class="line">    <span class="keyword">for</span> i <span class="keyword">in</span> <span class="built_in">range</span>(mb * <span class="number">16</span>):</span><br><span class="line">        data, pos = block(seed, i), <span class="number">0</span></span><br><span class="line">        <span class="keyword">while</span> pos &lt; BLOCK:  <span class="comment"># 按随机大小分多次发送，模拟应用实际的发送方式</span></span><br><span class="line">            r = sizes.random()</span><br><span class="line">            k = (sizes.randint(<span class="number">18</span>, <span class="number">300</span>) <span class="keyword">if</span> r &lt; <span class="number">0.35</span> <span class="keyword">else</span> sizes.randint(<span class="number">600</span>, <span class="number">3500</span>) <span class="keyword">if</span> r &lt; <span class="number">0.75</span></span><br><span class="line">                 <span class="keyword">else</span> sizes.randint(<span class="number">6000</span>, <span class="number">14000</span>) <span class="keyword">if</span> r &lt; <span class="number">0.97</span> <span class="keyword">else</span> sizes.randint(<span class="number">40000</span>, <span class="number">65000</span>))</span><br><span class="line">            s.sendall(data[pos:pos + k])</span><br><span class="line">            pos += k</span><br><span class="line">    s.shutdown(socket.SHUT_WR)</span><br><span class="line"><span class="keyword">else</span>:</span><br><span class="line">    port, seed = <span class="built_in">int</span>(sys.argv[<span class="number">2</span>]), <span class="built_in">int</span>(sys.argv[<span class="number">3</span>])</span><br><span class="line">    srv = socket.socket()</span><br><span class="line">    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, <span class="number">1</span>)</span><br><span class="line">    srv.bind((<span class="string">&quot;&quot;</span>, port))</span><br><span class="line">    srv.listen(<span class="number">1</span>)</span><br><span class="line">    <span class="built_in">print</span>(<span class="string">&quot;waiting for sender ...&quot;</span>, flush=<span class="literal">True</span>)</span><br><span class="line">    s, _ = srv.accept()</span><br><span class="line">    buf, i, bad = <span class="string">b&quot;&quot;</span>, <span class="number">0</span>, []</span><br><span class="line">    <span class="keyword">while</span> <span class="literal">True</span>:</span><br><span class="line">        data = s.recv(<span class="number">1</span> &lt;&lt; <span class="number">18</span>)</span><br><span class="line">        <span class="keyword">if</span> <span class="keyword">not</span> data:</span><br><span class="line">            <span class="keyword">break</span></span><br><span class="line">        buf += data</span><br><span class="line">        <span class="keyword">while</span> <span class="built_in">len</span>(buf) &gt;= BLOCK:  <span class="comment"># 每凑满一块就比对一次</span></span><br><span class="line">            <span class="keyword">if</span> buf[:BLOCK] != block(seed, i):</span><br><span class="line">                bad.append(i)</span><br><span class="line">            buf, i = buf[BLOCK:], i + <span class="number">1</span></span><br><span class="line">    <span class="built_in">print</span>(<span class="string">f&quot;blocks=<span class="subst">&#123;i&#125;</span> corrupted=<span class="subst">&#123;<span class="built_in">len</span>(bad)&#125;</span> <span class="subst">&#123;bad[:<span class="number">20</span>]&#125;</span>&quot;</span>)</span><br></pre></td></tr></table></figure>
 
-<p>在出问题的那个 Wi-Fi 下，用这个脚本发 64 MB 的输出是：</p>
+<p>在出问题的 5 GHz 连接下，用这个脚本发 64 MB 的输出是：</p>
 <figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">blocks=1024 corrupted=1 [328]</span><br></pre></td></tr></table></figure>
 
 <h2 id="走过的弯路"><a href="#走过的弯路" class="headerlink" title="走过的弯路"></a>走过的弯路</h2><ul>
